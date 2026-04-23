@@ -99,6 +99,8 @@ internal class OptionsPanelPatcher
         var nautilusOptions = optionsToAdd.FirstOrDefault(options => options.Name == "Nautilus");
         optionsToAdd.Remove(nautilusOptions);
 
+        TryAddModsSearchField(optionsPanel, modsTab);
+
         nautilusOptions.AddOptionsToPanel(optionsPanel, modsTab);
 
         // adding all other options here
@@ -113,6 +115,112 @@ internal class OptionsPanelPatcher
         
         PopulateBindings(optionsPanel, inputTab, GameInput.Device.Controller);
 #endif
+    }
+
+    private static string _modSearchText = "";
+
+    private static void TryAddModsSearchField(uGUI_OptionsPanel optionsPanel, int modsTab)
+    {
+        if(modsTab < 0 || modsTab >= optionsPanel.tabs.Count)
+            return;
+
+        var redemptionHandler = optionsPanel.GetComponentInChildren<MainMenuRedemptionHandler>(true);
+
+        if(!redemptionHandler) 
+            return;
+
+        var sourceInputField = redemptionHandler.inputfield;
+
+        if(!sourceInputField)
+            return;
+
+        var modsContainer = optionsPanel.tabs[modsTab].container.transform;
+
+        var searchField = Object.Instantiate(sourceInputField, modsContainer, false);
+        searchField.name = "ModsSearchBar";
+
+        var oldInputField = searchField.GetComponent<TMP_InputField>();
+
+        if(oldInputField == null)
+            return;
+
+        var textViewport = oldInputField.textViewport;
+        var textComponent = oldInputField.textComponent;
+        var placeholder = oldInputField.placeholder;
+        var targetGraphic = oldInputField.targetGraphic;
+
+        Object.DestroyImmediate(oldInputField);
+
+        var inputField = searchField.AddComponent<TMP_InputField>();
+        inputField.textViewport = textViewport;
+        inputField.textComponent = textComponent;
+        inputField.placeholder = placeholder;
+        inputField.targetGraphic = targetGraphic;
+        inputField.lineType = TMP_InputField.LineType.SingleLine;
+
+        inputField.text = _modSearchText;
+
+        if(inputField.placeholder is TMP_Text placeholderText)
+            placeholderText.text = "Filter shown mods...";
+
+        inputField.onValueChanged.AddListener(value =>
+        {
+            _modSearchText = value;
+            ApplySearchFilter(optionsPanel, modsTab, value);
+        });
+
+        ApplySearchFilter(optionsPanel, modsTab, _modSearchText);
+    }
+
+    private static void ApplySearchFilter(uGUI_OptionsPanel optionsPanel, int modsTab, string searchText)
+    {
+        if(modsTab < 0 || modsTab >= optionsPanel.tabs.Count)
+            return;
+
+        var modsContainer = optionsPanel.tabs[modsTab].container.transform;
+        var filters = (searchText ?? string.Empty)
+            .Split('|')
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrEmpty(x))
+            .ToArray();
+
+        ModOptionsHeadingsToggle.HeadingToggle currentHeadingToggle = null;
+
+        bool inModCategory = false;
+        bool currentVisible = true;
+
+        for(int i = 0; i < modsContainer.childCount; i++)
+        {
+            var child = modsContainer.GetChild(i);
+
+            if(child.name == "ModSearchBar")
+                continue;
+
+            if(child.TryGetComponent<ModOptionsHeadingsToggle.HeadingToggle>(out var headingToggle))
+            {
+                if(currentHeadingToggle != null && currentVisible)
+                    currentHeadingToggle.EnsureState();
+
+                currentHeadingToggle = headingToggle;
+                inModCategory = true;
+
+                var caption = child.Find("Caption");
+                var headingText = caption?.GetComponent<TMP_Text>()?.text ?? "";
+
+                currentVisible = filters.Length == 0 || filters.Any(filter => headingText.IndexOf(filter, System.StringComparison.OrdinalIgnoreCase) >= 0);
+
+                child.gameObject.SetActive(currentVisible);
+                continue;
+            }
+
+            if(!inModCategory)
+                continue;
+
+            child.gameObject.SetActive(currentVisible);
+        }
+
+        if(currentHeadingToggle != null && currentVisible)
+            currentHeadingToggle.EnsureState();
     }
 
 #if SUBNAUTICA
@@ -241,7 +349,7 @@ internal class OptionsPanelPatcher
     // Options can be collapsed/expanded by clicking on mod's title or arrow button
     private static class ModOptionsHeadingsToggle
     {
-        private enum HeadingState { Collapsed, Expanded };
+        internal enum HeadingState { Collapsed, Expanded };
 
         private static GameObject _headingPrefab = null;
 
@@ -342,7 +450,7 @@ internal class OptionsPanelPatcher
 
         #region components
         // main component for headings toggling
-        private class HeadingToggle: Selectable, IPointerClickHandler
+        internal class HeadingToggle: Selectable, IPointerClickHandler
         {
             private HeadingState _headingState = HeadingState.Expanded;
             private string _headingName = null;
@@ -384,11 +492,11 @@ internal class OptionsPanelPatcher
 
                 HeadingState storedState = StoredHeadingStates.get(_headingName);
 
-                if (_headingState != storedState)
-                {
-                    SetState(storedState);
-                    GetComponentInChildren<ToggleButtonClickHandler>()?.SetStateInstant(storedState);
-                }
+                _headingState = storedState;
+
+                _childOptions.ForEach(option => option.SetActive(storedState == HeadingState.Expanded));
+
+                GetComponentInChildren<ToggleButtonClickHandler>()?.SetStateInstant(storedState);
             }
 
             public void SetState(HeadingState state)
@@ -492,6 +600,8 @@ internal class OptionsPanelPatcher
             {
                 options.GetChild(i).GetComponent<HeadingToggle>()?.EnsureState();
             }
+
+            ApplySearchFilter((uGUI_OptionsPanel)__instance, tabIndex, _modSearchText);
         }
         #endregion
     }
